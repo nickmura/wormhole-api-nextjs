@@ -25,10 +25,9 @@ export default function Bridge() {
   const [sourceToken, setSourceToken] = useState('ETH');
   const [amount, setAmount] = useState('');
   const [isTransferring, setIsTransferring] = useState(false);
-  const [transferStatus, setTransferStatus] = useState<string>('');
+  const [transferStatus, setTransferStatus] = useState<string | React.ReactNode>('');
   const [quote, setQuote] = useState<any>(null);
   const [showPreview, setShowPreview] = useState(false);
-  const [quoteData, setQuoteData] = useState<any>(null); // Store route, transferRequest, wh
 
   const { address, isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
@@ -124,7 +123,7 @@ export default function Bridge() {
 
       // Get transfer quote
       console.log('[Bridge] Calling getTransferQuote with amount:', amount, typeof amount);
-      const { route, transferRequest, wh } = await getTransferQuote({
+      const { route, transferRequest } = await getTransferQuote({
         sourceChain: sourceChainName,
         destChain: destChainName,
         tokenAddress: tokenAddress,
@@ -159,7 +158,7 @@ export default function Bridge() {
       }
 
       console.log('[Bridge] Full quote object:', quoteResult);
-      console.log('[Bridge] Quote ETA:', quoteResult.eta, 'milliseconds =', Math.floor(quoteResult.eta / 1000), 'seconds =', Math.floor(quoteResult.eta / 60000), 'minutes');
+      console.log('[Bridge] Quote ETA:', quoteResult.eta, 'milliseconds =', quoteResult.eta ? Math.floor(quoteResult.eta / 1000) : 'unknown', 'seconds =', quoteResult.eta ? Math.floor(quoteResult.eta / 60000) : 'unknown', 'minutes');
       console.log('[Bridge] Route type:', route.constructor.name);
 
       // Store quote and show preview with route info

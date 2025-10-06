@@ -184,7 +184,7 @@ export async function getTransferQuote(params: {
 
     // Set sender and receiver on the transfer request
     transferRequest.sender = senderAddr;
-    transferRequest.receiver = receiverAddr;
+    (transferRequest as any).receiver = receiverAddr; // Property exists at runtime but not in types
 
     console.log('[Wormhole] Transfer request created with sender/receiver:', transferRequest);
   } catch (e) {
@@ -241,7 +241,7 @@ export async function initiateTransfer(params: {
   amount: string;
 }) {
   try {
-    const { route, transferRequest, signer, wh, destAddress, amount: amt } = params;
+    const { route, transferRequest, signer, destAddress, amount: amt } = params;
 
     console.log('[Wormhole] Preparing transfer parameters:', { amount: amt, destAddress, amtType: typeof amt });
     // Prepare transfer parameters
