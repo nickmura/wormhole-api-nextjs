@@ -218,8 +218,9 @@ export async function getTransferQuote(params: {
     throw new Error('No routes found for this transfer');
   }
 
-  // Return best route (first one due to prioritization order)
+  // Return best route (first one due to prioritization order) with all routes
   console.log('[Wormhole] Returning best route:', foundRoutes[0].constructor.name);
+  console.log('[Wormhole] Total routes available:', foundRoutes.length);
   return { route: foundRoutes[0], transferRequest, wh, allRoutes: foundRoutes };
   } catch (error: any) {
     console.error('[Wormhole] CAUGHT ERROR in getTransferQuote:', error);
@@ -227,6 +228,61 @@ export async function getTransferQuote(params: {
     console.error('[Wormhole] Error stack:', error?.stack);
     throw error;
   }
+}
+
+/**
+ * Get quotes for all available routes
+ */
+export async function getQuotesForAllRoutes(params: {
+  allRoutes: any[];
+  transferRequest: any;
+  amount: string;
+}) {
+  const { allRoutes, transferRequest, amount } = params;
+
+  console.log('[Wormhole] Getting quotes for', allRoutes.length, 'routes');
+
+  const transferParams = {
+    amount,
+    options: { nativeGas: 0 }
+  };
+
+  const quotes = await Promise.all(
+    allRoutes.map(async (route, index) => {
+      try {
+        console.log(`[Wormhole] Getting quote for route ${index + 1}:`, route.constructor.name);
+
+        const validated = await route.validate(transferRequest, transferParams);
+        if (!validated.valid) {
+          console.log(`[Wormhole] Route ${index + 1} validation failed:`, validated.error);
+          return null;
+        }
+
+        const quote = await route.quote(transferRequest, validated.params);
+        if (!quote.success) {
+          console.log(`[Wormhole] Route ${index + 1} quote failed:`, quote.error);
+          return null;
+        }
+
+        console.log(`[Wormhole] Route ${index + 1} quote:`, {
+          type: route.constructor.name,
+          eta: quote.eta,
+          relayFee: quote.relayFee,
+        });
+
+        return quote;
+      } catch (error) {
+        console.error(`[Wormhole] Error getting quote for route ${index + 1}:`, error);
+        return null;
+      }
+    })
+  );
+
+  // Filter out failed quotes
+  const validQuotes = quotes.filter(q => q !== null);
+  console.log('[Wormhole] Got', validQuotes.length, 'valid quotes out of', allRoutes.length, 'routes');
+
+  return validQuotes;
 }
 
 /**

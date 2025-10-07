@@ -7,7 +7,9 @@ import ChainSelector from './ChainSelector';
 import TokenSelector from './TokenSelector';
 import { TOKENS } from '../lib/tokens';
 import { CHAINS, type ChainId } from '../lib/chains';
-import { createWormholeSigner, getTransferQuote, initiateTransfer } from '../lib/wormhole';
+import { createWormholeSigner, getTransferQuote, getQuotesForAllRoutes, initiateTransfer } from '../lib/wormhole';
+import { formatRoutes } from '../lib/route-helpers';
+import RouteSelector, { type RouteOption } from './RouteSelector';
 
 const ERC20_ABI = [
   {
@@ -28,6 +30,9 @@ export default function Bridge() {
   const [transferStatus, setTransferStatus] = useState<string | React.ReactNode>('');
   const [quote, setQuote] = useState<any>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [availableRoutes, setAvailableRoutes] = useState<RouteOption[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<RouteOption | null>(null);
+  const [routeData, setRouteData] = useState<any>(null); // Store route, transferRequest, wh
 
   const { address, isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
@@ -121,9 +126,9 @@ export default function Bridge() {
 
       console.log('[Bridge] Token address:', tokenAddress);
 
-      // Get transfer quote
+      // Get all available routes
       console.log('[Bridge] Calling getTransferQuote with amount:', amount, typeof amount);
-      const { route, transferRequest } = await getTransferQuote({
+      const { route, transferRequest, wh, allRoutes } = await getTransferQuote({
         sourceChain: sourceChainName,
         destChain: destChainName,
         tokenAddress: tokenAddress,
@@ -132,42 +137,45 @@ export default function Bridge() {
         destAddress: address, // Using same address for destination
       });
 
-      console.log('[Bridge] Quote received, route:', route);
-      setTransferStatus('Quote received...');
+      console.log('[Bridge] Routes received:', allRoutes?.length || 0);
+      setTransferStatus('Getting quotes for all routes...');
 
-      // Store quote for preview
-      setQuote(null); // Clear previous quote first
+      // Get quotes for all routes
+      const allQuotes = await getQuotesForAllRoutes({
+        allRoutes: allRoutes || [route],
+        transferRequest,
+        amount,
+      });
 
-      // Get quote details
-      console.log('[Bridge] Getting detailed quote...');
-      setTransferStatus('Getting quote...');
+      console.log('[Bridge] Quotes received:', allQuotes.length);
 
-      const transferParams = { amount, options: { nativeGas: 0 } };
-      const validated = await route.validate(transferRequest, transferParams);
+      // Format routes for UI
+      const formattedRoutes = formatRoutes(allRoutes || [route], allQuotes);
+      setAvailableRoutes(formattedRoutes);
 
-      if (!validated.valid) {
-        setTransferStatus(`Validation failed: ${validated.error}`);
+      // Select the first route by default (cheapest or fastest based on your preference)
+      const defaultRoute = formattedRoutes[0];
+      setSelectedRoute(defaultRoute);
+
+      // Store route data for transfer
+      setRouteData({ allRoutes, transferRequest, wh, allQuotes });
+
+      // Get quote for the default selected route
+      const defaultQuote = allQuotes[0];
+      if (!defaultQuote || !defaultQuote.success) {
+        setTransferStatus('Failed to get quote');
         return;
       }
 
-      const quoteResult = await route.quote(transferRequest, validated.params);
-
-      if (!quoteResult.success) {
-        setTransferStatus(`Quote failed: ${quoteResult.error}`);
-        return;
-      }
-
-      console.log('[Bridge] Full quote object:', quoteResult);
-      console.log('[Bridge] Quote ETA:', quoteResult.eta, 'milliseconds =', quoteResult.eta ? Math.floor(quoteResult.eta / 1000) : 'unknown', 'seconds =', quoteResult.eta ? Math.floor(quoteResult.eta / 60000) : 'unknown', 'minutes');
-      console.log('[Bridge] Route type:', route.constructor.name);
+      console.log('[Bridge] Default quote:', defaultQuote);
 
       // Store quote and show preview with route info
       setQuote({
-        ...quoteResult,
+        ...defaultQuote,
         routeType: route.constructor.name,
       });
       setShowPreview(true);
-      setTransferStatus('Review the transaction details below');
+      setTransferStatus('Review the transaction details and select a route');
       setIsTransferring(false);
 
       // TODO: Add transfer tracking and completion
@@ -191,24 +199,20 @@ export default function Bridge() {
       // Keep preview visible during transfer
       setTransferStatus('Preparing transaction...');
 
-      // Get the route and transfer request again
-      const sourceChainName = CHAINS[sourceChain].name;
-      const destChainName = CHAINS[destChain].name;
-      const tokenAddress = selectedTokenInfo?.address;
-
-      if (!tokenAddress) {
-        setTransferStatus('Invalid token selected');
+      if (!routeData || !selectedRoute) {
+        setTransferStatus('Please select a route first');
+        setIsTransferring(false);
         return;
       }
 
-      const { route, transferRequest, wh } = await getTransferQuote({
-        sourceChain: sourceChainName,
-        destChain: destChainName,
-        tokenAddress: tokenAddress,
-        amount: amount,
-        sourceAddress: address,
-        destAddress: address,
-      });
+      const sourceChainName = CHAINS[sourceChain].name;
+
+      // Get the selected route object from routeData
+      const routeIndex = availableRoutes.findIndex(r => r.type === selectedRoute.type);
+      const route = routeData.allRoutes[routeIndex];
+      const { transferRequest, wh } = routeData;
+
+      console.log('[Bridge] Using selected route:', selectedRoute.name);
 
       // Create signer
       setTransferStatus('Waiting for wallet approval...');
@@ -227,9 +231,14 @@ export default function Bridge() {
 
       console.log('[Bridge] Transfer initiated:', receipt);
 
-      // Extract transaction hash from receipt - try multiple possible locations
-      const txHash = receipt?.originTxs?.[0]?.txid || receipt?.txid || receipt?.hash || 'unknown';
-      console.log('[Bridge] Extracted tx hash:', txHash);
+      // Extract transaction hash from receipt
+      // For routes with approval (like CCTP), the actual bridge tx is the last item
+      // For manual routes without approval, there's only one transaction
+      const originTxs = receipt?.originTxs || [];
+      const txHash = originTxs.length > 0
+        ? originTxs[originTxs.length - 1]?.txid
+        : (receipt?.txid || receipt?.hash || 'unknown');
+      console.log('[Bridge] Extracted tx hash:', txHash, 'from', originTxs.length, 'transactions');
 
       // Build Wormhole scanner URL
       const wormholeUrl = `https://wormholescan.io/#/tx/${txHash}?network=Mainnet`;
@@ -353,6 +362,27 @@ export default function Bridge() {
         {/* Quote Preview */}
         {showPreview && quote && (
           <div className="space-y-4">
+            {/* Route Selection */}
+            {availableRoutes.length > 0 && (
+              <div className="bg-[#2a2a3e] border border-gray-700 rounded-lg p-4">
+                <RouteSelector
+                  routes={availableRoutes}
+                  selectedRoute={selectedRoute}
+                  onSelectRoute={(route) => {
+                    setSelectedRoute(route);
+                    // Update quote when route changes
+                    const routeIndex = availableRoutes.findIndex(r => r.type === route.type);
+                    if (routeIndex >= 0 && routeData?.allQuotes[routeIndex]) {
+                      setQuote({
+                        ...routeData.allQuotes[routeIndex],
+                        routeType: route.type,
+                      });
+                    }
+                  }}
+                />
+              </div>
+            )}
+
             <div className="bg-[#2a2a3e] border border-gray-700 rounded-lg p-4">
               <h3 className="text-lg font-semibold text-white mb-4">Transaction Preview</h3>
 
